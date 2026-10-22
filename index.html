@@ -128,6 +128,11 @@ const CONFIG = {
 // LEVELS — chép từ ảnh LD. Ký hiệu: '.' ô sơn · '#' block · 'S' start · 'x' không sơn (vùng mái).
 // faces[i] = mặt i quanh nhà (0 trước, 1 phải, 2 sau, 3 trái). Mặt có rows = phase chơi;
 // mặt chỉ có h / cols = mặt trang trí (đã sơn kín). opt = số swipe tối ưu (BFS).
+// parts (thay roof, cho nhà hình dạng riêng; toạ độ ô, gốc giữa nền, +z = mặt trước):
+//   box [x0,x1,z0,z1,y0,y1] · pz [z0,z1] + pts [[x,y]..] = lăng trụ dọc z · px [x0,x1] + pts [[z,y]..] = dọc x
+//   t = dải mái dày t phủ trên polyline pts · slot + pts [[u,y]..] | arch [u0,u1,y0,y1] = trang trí phẳng trên mặt slot (at = khoảng cách từ tâm)
+//   m: body | mid | roof | light | dark
+// ccw: true = LD vẽ các mặt đi ngược chiều kim đồng hồ (Mặt 2 ở bên trái −x, Mặt 4 bên phải +x).
 // =====================================================================
 const LEVELS = [
   { name: 'Level 1', paint: 'blue', w: 4, d: 5,
@@ -190,7 +195,7 @@ const LEVELS = [
   { name: 'Level 9', paint: 'blue', w: 7, d: 7,
     roof: { type: 'slab', t: 0.45, over: 0.35 },
     faces: [
-      { rows: ['#......', '#.###..', '......#', '..###..', '.......', '#.###..', '.......', '..###..', '.......', '#.###..', 'S......', '#.....#'], opt: 0 }, // LD lỗi: BFS không giải được (cột 1 trống suốt, không dừng được ở hàng 2/4/6/8)
+      { rows: ['#......', '#.###..', '.......', '..###.#', '.......', '#.###..', '.......', '..###.#', '.......', '#.###..', 'S......', '#.....#'], opt: 14 },
       { rows: ['#....##', '.....##', '..#...#', '.......', '#.#.#..', '#.#.#..', '..#.#..', '.##.#..', '.##.#..', '..#.#..', '#.#.#..', '#S#.#..'], opt: 17 },
       { rows: ['.......', '.#.##..', '.......', '......#', '#......', '#..###.', '#..###.', '#..###.', '#......', '##.#.#.', '##.....', 'S....##'], opt: 17 },
       { rows: ['#......', '.......', '..####.', '.......', '.##.##.', '.##.##.', '.......', '###.#..', '....#..', '.####..', '.......', 'S.....#'], opt: 15 }
@@ -218,6 +223,109 @@ const LEVELS = [
       { rows: ['...##...', '.#.##.#.', '........', '##.##.##', '##......', '....#.#.', '....#...', '....####', '#....###', '........', '.###.##.', 'S..#....'], opt: 23 },
       { rows: ['..#####', '..###..', '..###..', '....#..', '..#.#..', '..#.#..', '..#....', '..#.##.', '.......', '#.#.##.', '#......', 'S...###'], opt: 14 },
       { rows: ['#......#', '#..#....', '...#.#..', '...#....', '...#.###', '...#....', '...#.##.', '##.#.##.', '##......', '####..#.', '####..#.', 'S.....#.'], opt: 22 }
+    ] },
+  { name: 'Level 13', paint: 'blue', w: 7, d: 8, ccw: true,
+    parts: [ // khối chính mái lệch cao dần về +x; cánh trái thấp: nửa trước dốc 5→7, nửa sau bằng 7
+      { pz: [-4, 4], pts: [[-0.5, 0], [3.5, 0], [3.5, 11], [-0.5, 9]], m: 'mid' },
+      { pz: [-4.05, 4.05], pts: [[-0.55, 8.99], [3.55, 11.01]], t: 0.12, m: 'dark' },
+      { px: [-3.5, -0.5], pts: [[4, 0], [4, 5], [0, 7], [-4, 7], [-4, 0]] },
+      { px: [-3.55, -0.5], pts: [[4.05, 4.99], [0, 7], [-4.05, 7]], t: 0.12, m: 'dark' },
+      { slot: 3, pts: [[0, 7], [8, 7], [8, 9], [0, 9]], m: 'light', at: 0.506 },
+      { slot: 3, arch: [0.57, 1.7, 7.4, 8.8], m: 'roof', at: 0.512 }, { slot: 3, arch: [3.4, 4.55, 7.4, 8.8], m: 'roof', at: 0.512 }, { slot: 3, arch: [6.25, 7.4, 7.4, 8.8], m: 'roof', at: 0.512 }
+    ],
+    faces: [
+      { rows: ['xxxxx..', 'xxx....', 'xxx.##.', 'xxx.##.', 'xxx..#.', '.....#.', '.......', '.##....', '.##....', 'S...#..'], opt: 15 },
+      { rows: ['....xxxx', '......xx', '.##.#...', '........', '####.##.', '........', 'S....###'], opt: 14 },
+      { rows: ['..xxxxx', '....xxx', '..#.xxx', '..#....', '......#', '.####..', '.......', '.##.#..', '....#..', 'S..##..'], opt: 20 },
+      { rows: ['..######', '..###...', '....#.#.', '..#.#.#.', '..#.#.#.', '..#.....', '..#.###.', '........', '#.#.###.', '#.......', 'S...####'], opt: 14 }
+    ] },
+  { name: 'Level 14', paint: 'red', w: 5, d: 7, ccw: true,
+    parts: [ // trước thấp 7, sau cao 9: mái dốc lên về phía sau, nửa sau bằng
+      { px: [-2.5, 2.5], pts: [[3.5, 0], [3.5, 7], [-0.5, 9], [-3.5, 9], [-3.5, 0]], m: 'mid' },
+      { px: [-2.55, 2.55], pts: [[3.55, 6.98], [-0.5, 9], [-3.55, 9]], t: 0.1, m: 'dark' }
+    ],
+    faces: [
+      { rows: ['....#', '.##..', '.....', '.###.', '.....', 'S.##.', '#....'], opt: 10 },
+      { rows: ['...xxxx', '.....xx', '..##...', '...#...', '...#...', '#..#...', '#..#...', '####...', 'S.....#'], opt: 15 },
+      { rows: ['.....', '...##', '#....', '#....', '#.##.', '#.###', '#....', '.....', 'S....'], opt: 16 },
+      { rows: ['xxxx...', 'xx.....', '#....##', '#...#..', '..#....', '..#....', '.......', '......#', 'S###..#'], opt: 22 }
+    ] },
+  { name: 'Level 15', paint: 'purple', w: 7, d: 7,
+    parts: [ // mái hồi nóc dọc trục x: trước/sau thấy mặt dốc tối, hai bên thấy hồi hình thang
+      { box: [-3.5, 3.5, -3.5, 3.5, 0, 11] },
+      { px: [-3.5, 3.5], pts: [[3.5, 11], [1.5, 13], [-1.5, 13], [-3.5, 11]], m: 'light' },
+      { px: [-3.77, 3.77], pts: [[3.62, 10.88], [1.5, 13], [-1.5, 13], [-3.62, 10.88]], t: 0.18, m: 'dark' }
+    ],
+    faces: [
+      { rows: ['#......', '..####.', '.......', '.##.##.', '.##.##.', '.......', '###.#..', '....#..', '.####..', '.......', 'S.....#'], opt: 14 },
+      { rows: ['...#...', '.#.#.#.', '.....#.', '##.#.#.', '.......', '.#.#.##', '.#.....', '.###.#.', '.......', '####.#.', 'S......'], opt: 14 },
+      { rows: ['#.....#', '......#', '..###.#', '..###.#', '.#.....', '.#.##..', '...##..', '.##....', '.##.#..', '.##.#..', 'S...#..'], opt: 15 },
+      { rows: ['......#', '.#.....', '.#.##..', '##.##..', '...##..', '.......', '.#.###.', '...###.', '.#####.', '.#####.', 'S......'], opt: 15 }
+    ] },
+  { name: 'Level 16', paint: 'yellow', w: 8, d: 8,
+    parts: [ // khối chính 6 ô mái hồi + ống khói + 2 cửa mái; cánh phải 2 ô mái dốc ra ngoài
+      { box: [-4, 2, -4, 4, 0, 10], m: 'mid' },
+      { pz: [-4, 4], pts: [[-4, 10], [2, 10], [-1, 12.2]], m: 'light' },
+      { pz: [-4.05, 4.05], pts: [[-4.12, 9.92], [-1, 12.2], [2.12, 9.92]], t: 0.12, m: 'dark' },
+      { box: [0.05, 0.55, -0.3, 0.3, 10.6, 11.9], m: 'dark' },
+      { px: [0.6, 1.6], pts: [[2.09, 10.2], [2.09, 11.07], [1.475, 11.52], [0.86, 11.07], [0.86, 10.2]], m: 'light' },
+      { px: [0.6, 1.6], pts: [[-0.86, 10.2], [-0.86, 11.07], [-1.475, 11.52], [-2.09, 11.07], [-2.09, 10.2]], m: 'light' },
+      { pz: [-4, 4], pts: [[2, 0], [4, 0], [4, 7], [2, 9.2]], m: 'mid' },
+      { pz: [-4.05, 4.05], pts: [[1.95, 9.23], [4.1, 6.93]], t: 0.12, m: 'dark' }
+    ],
+    faces: [
+      { rows: ['#....#xx', '#.....xx', '...##..x', '...##...', '...##...', '..#.....', '.....#..', '.....###', 'S.......', '##......'], opt: 26 },
+      { rows: ['#...####', '#.#.#.##', '....#..#', '....#..#', '.......#', '.....#.#', 'S#......'], opt: 18 },
+      { rows: ['xx###...', 'xx....#.', 'x....##.', '.....##.', '.....##.', '..##.#..', '........', '........', 'S..###..', '#..###..'], opt: 25 },
+      { rows: ['....####', '.#....##', '...##...', '##.##...', '##......', '####....', '####....', '####.#..', 'S....#..', '#....#..'], opt: 20 }
+    ] },
+  { name: 'Level 17', paint: 'blue', w: 8, d: 8,
+    parts: [ // mái chóp cụt tối: trước/sau chữ nhật, hai bên hình thang
+      { box: [-4, 4, -4, 4, 0, 11] },
+      { px: [-4, 4], pts: [[4, 11], [2, 13], [-2, 13], [-4, 11]], m: 'dark' }
+    ],
+    faces: [
+      { rows: ['......##', '.##.....', '.##.#.#.', '......#.', '###...#.', '###.....', '###..##.', '........', '.#...##.', '.#...##.', 'S..#....'], opt: 18 },
+      { rows: ['#.......', '#.#####.', '........', '..####..', '..####..', '........', '#.##.#..', '.....#..', '.....#..', '.#......', 'S..#...#'], opt: 18 },
+      { rows: ['.#......', '....####', '.##.....', '.######.', '....###.', '###.###.', '........', '.##.###.', '.##.###.', '........', 'S......#'], opt: 17 },
+      { rows: ['...#####', '.#.....#', '.......#', '..###..#', '..###..#', '#.###..#', '#...#..#', '....####', '.##.####', '........', 'S##.....'], opt: 20 }
+    ] },
+  { name: 'Level 18', paint: 'red', w: 8, d: 9,
+    parts: [ // tháp giữa 4 ô mái hồi; hai cánh mái dốc ra ngoài; cửa vòm trên tường tháp hai bên
+      { box: [-2, 2, -4.5, 4.5, 0, 10], m: 'mid' },
+      { pz: [-4.5, 4.5], pts: [[-2, 10], [2, 10], [0, 11.23]], m: 'light' },
+      { pz: [-4.55, 4.55], pts: [[-2.1, 9.95], [0, 11.23], [2.1, 9.95]], t: 0.1, m: 'dark' },
+      { pz: [-4.5, 4.5], pts: [[2, 0], [4, 0], [4, 7], [2, 8.23]], m: 'mid' },
+      { pz: [-4.5, 4.5], pts: [[-4, 0], [-2, 0], [-2, 8.23], [-4, 7]], m: 'mid' },
+      { pz: [-4.55, 4.55], pts: [[1.95, 8.26], [4.1, 6.94]], t: 0.12, m: 'dark' },
+      { pz: [-4.55, 4.55], pts: [[-4.1, 6.94], [-1.95, 8.26]], t: 0.12, m: 'dark' },
+      { slot: 1, arch: [1.09, 2.91, 8, 9.57], m: 'light', at: 2.01 }, { slot: 1, arch: [6.09, 7.91, 8, 9.57], m: 'light', at: 2.01 },
+      { slot: 3, arch: [1.09, 2.91, 8, 9.57], m: 'light', at: 2.01 }, { slot: 3, arch: [6.09, 7.91, 8, 9.57], m: 'light', at: 2.01 }
+    ],
+    faces: [
+      { rows: ['xx....xx', 'xx.##.xx', 'xx.##.xx', '...##...', '......#.', '.....#..', '..#..#.#', 'S.#..#..', '#....#..', '###.....'], opt: 23 },
+      { rows: ['......##.', '###.#....', '....#..##', '.........', '.###.#.#.', '.###.#.#.', 'S....#...'], opt: 16 },
+      { rows: ['xx...#xx', 'xx....xx', 'xx..##xx', '....##..', '....#...', '#...#.#.', '#.....#.', '.....##.', '..#####.', 'S##.....'], opt: 27 },
+      { rows: ['####....#', '#..#.##.#', '#..#.....', '#........', '.......##', '.#####...', 'S........'], opt: 17 }
+    ] },
+  { name: 'Level 19', paint: 'purple', w: 10, d: 7,
+    parts: [{ box: [-5, 5, -3.5, 3.5, 0, 10] }], // không mái
+    faces: [
+      { rows: ['....##....', '.##.##.##.', '.##.##.##.', '.##.##.##.', '.##.......', '.##.....#.', '...#.#..#.', '.#.#.#....', '.#.#.#..##', 'S..#....##'], opt: 18 },
+      { rows: ['.......', '.#####.', '.#.....', '......#', '##.#...', '##.##..', '.......', '.......', '.#.###.', 'S#.....'], opt: 15 },
+      { rows: ['#......#..', '..........', '.#####....', '.....#.###', '..##.#.###', '#.##.#..##', '..........', '.####...#.', '.####...#.', 'S####.#...'], opt: 29 },
+      { rows: ['....#..', '.......', '.....##', '.###...', '.#.....', '...###.', '##.###.', '#......', '#..#.##', 'S....##'], opt: 23 }
+    ] },
+  { name: 'Level 20', paint: 'yellow', w: 10, d: 8,
+    parts: [ // nửa trước dốc từ 10 lên 12, nửa sau mái bằng
+      { px: [-5, 5], pts: [[4, 0], [4, 10], [0, 12], [-4, 12], [-4, 0]], m: 'roof' },
+      { px: [-5.05, 5.05], pts: [[4.08, 9.96], [0, 12], [-4.06, 12]], t: 0.12, m: 'dark' }
+    ],
+    faces: [
+      { rows: ['#####...##', '####..#.##', '####..#...', '####..#...', '####..#...', '####..#...', '##........', '.....###..', '.###.#####', 'S....#####'], opt: 17 },
+      { rows: ['xxxx....', 'xx......', '......##', '..#.....', '..###...', '..#####.', '#..####.', '##......', '#.......', 'S.###...', '########', '########'], opt: 25 },
+      { rows: ['##......##', '##.......#', '.........#', '....#.....', '.....##...', '..#..##...', '#.#..##...', '#.#.......', '#.#...#.##', 'S.....#...', '#####.###.', '#####.....'], opt: 30 },
+      { rows: ['....xxxx', '......xx', '.#......', '.#......', '..#.....', '..#.#..#', '.......#', '#.###...', '#.......', '#.......', '..#.#.#.', 'S...#...'], opt: 29 }
     ] }
 ];
 
@@ -325,7 +433,7 @@ function buildFace(def, slot) {
   F.tex.t.anisotropy = renderer.capabilities.getMaxAnisotropy ? Math.min(8, renderer.capabilities.getMaxAnisotropy()) : 4;
   const fr = FRAME[slot], half = slot % 2 === 0 ? G.D / 2 : G.W / 2;
   const plane = new THREE.Mesh(new THREE.PlaneGeometry(w, R), new THREE.MeshLambertMaterial({ map: F.tex.t, alphaTest: 0.5, transparent: false }));
-  plane.rotation.y = fr.ry; plane.position.copy(fr.n).multiplyScalar(half + 0.002); plane.position.y = R / 2;
+  plane.rotation.y = fr.ry; plane.position.copy(fr.n).multiplyScalar(half + 0.02); plane.position.y = R / 2; // +0.02: trước thân nhà/trang trí, tránh z-fight
   house.add(plane);
   // blocks (merge với ô kế bên cùng loại)
   const L = CONFIG.look;
@@ -388,7 +496,43 @@ function frustumGeo(bw, bd, tw, td, h) { // non-indexed → flat normals
   if (tw > 0.001 && td > 0.001) quad(t[0], t[1], t[2], t[3]);
   const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.computeVertexNormals(); return g;
 }
+const PART_MAT = {
+  body: bodyMat, mid: blockMat, roof: roofMat,
+  light: new THREE.MeshLambertMaterial({ color: 0xd4d5d8 }), dark: new THREE.MeshLambertMaterial({ color: 0x47484d })
+};
+function addDeco(p, mat) {
+  const even = p.slot % 2 === 0, fw = even ? G.W : G.D, fr = FRAME[p.slot], sh = new THREE.Shape();
+  if (p.arch) {
+    const [u0, u1, y0, y1] = p.arch, r = (u1 - u0) / 2;
+    sh.moveTo(u0, y0); sh.lineTo(u1, y0); sh.lineTo(u1, y1 - r); sh.absarc(u0 + r, y1 - r, r, 0, Math.PI, false); sh.lineTo(u0, y0);
+  } else p.pts.forEach(([u, y], i) => i ? sh.lineTo(u, y) : sh.moveTo(u, y));
+  const g = new THREE.ShapeGeometry(sh, 12); g.translate(-fw / 2, 0, 0);
+  const m = addMesh(g, mat); m.rotation.y = fr.ry;
+  m.position.copy(fr.n).multiplyScalar(p.at !== undefined ? p.at : (even ? G.D : G.W) / 2 + 0.006);
+}
+function buildParts(parts) {
+  const bb = new THREE.Box3();
+  for (const p of parts) {
+    const mat = PART_MAT[p.m || 'body'];
+    if (p.slot !== undefined) { addDeco(p, mat); continue; }
+    let m;
+    if (p.box) {
+      const [x0, x1, z0, z1, y0, y1] = p.box;
+      m = addMesh(new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0), mat, (x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+    } else {
+      const pts = p.t ? [...p.pts, ...p.pts.map(([u, y]) => [u, y + p.t]).reverse()] : p.pts;
+      const [a0, a1] = p.pz || p.px;
+      const g = new THREE.ExtrudeGeometry(new THREE.Shape(pts.map(([u, y]) => new THREE.Vector2(u, y))), { depth: a1 - a0, bevelEnabled: false });
+      if (p.pz) g.translate(0, 0, a0); else { g.rotateY(-Math.PI / 2); g.translate(a1, 0, 0); } // px: shape (z,y) → world, extrude along x
+      m = addMesh(g, mat);
+    }
+    bb.expandByObject(m);
+  }
+  G.TOP = bb.max.y;
+  G.OVER = Math.max(0, bb.max.x - G.W / 2, -bb.min.x - G.W / 2, bb.max.z - G.D / 2, -bb.min.z - G.D / 2);
+}
 function buildRoof(lv) {
+  if (lv.parts) { buildParts(lv.parts); return; }
   const R = lv.roof, W = G.W, D = G.D;
   const H = Math.max(...G.faces.map(f => f.R));
   if (R.type === 'shed') {
@@ -434,7 +578,7 @@ function disposeHouse() {
 function loadLevel(idx, withIntro) {
   disposeHouse();
   G.levelIdx = idx; G.lv = LEVELS[idx]; G.W = G.lv.w; G.D = G.lv.d;
-  G.faces = G.lv.faces.map((def, slot) => buildFace(def, slot));
+  G.faces = G.lv.faces.map((def, i) => buildFace(def, G.lv.ccw ? (4 - i) % 4 : i));
   G.play = G.faces.filter(f => f.playable);
   buildRoof(G.lv);
   const blob = new THREE.Mesh(new THREE.PlaneGeometry(G.W + 3.2, G.D + 3.2), new THREE.MeshBasicMaterial({ map: blobTex.t, transparent: true, depthWrite: false }));
