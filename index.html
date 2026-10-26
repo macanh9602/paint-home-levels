@@ -56,6 +56,15 @@ body { background: var(--bg-bot); color: var(--ink); font-family: var(--font-ui)
 .sheet .row { display: flex; gap: 10px; }
 .sheet .row .btn { flex: 1; justify-content: center; background: #eef0f4; }
 .sheet .row .btn.primary { background: var(--accent); }
+.seg { display: flex; gap: 2px; background: rgba(34, 37, 44, 0.07); border-radius: 9px; padding: 2px; align-self: flex-start; }
+.seg button { border: 0; background: transparent; color: var(--muted); font: 700 12px var(--font-ui); min-width: 40px; height: 28px; padding: 0 10px; border-radius: 7px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: #ffffff; color: var(--ink); box-shadow: 0 1px 3px rgba(30, 36, 50, 0.15); }
+.seg button:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+#app.preview .bottom, #app.preview .hint, #app.preview .sheet, #app.preview .pips { display: none; }
+#pvLabels { position: absolute; inset: 0; pointer-events: none; display: none; }
+#app.v2d #pvLabels { display: block; }
+.pvl { position: absolute; transform: translateX(-50%); white-space: nowrap; font-size: 14px; font-weight: 800; }
+.pvl small { font-size: 12px; font-weight: 600; color: var(--muted); }
 @media (max-width: 380px) { .btn .lbl { display: none; } .btn { padding: 0 13px; } }
 @media (prefers-reduced-motion: reduce) { .sheet, .hint { transition: none; } }
 </style>
@@ -66,6 +75,11 @@ body { background: var(--bg-bot); color: var(--ink); font-family: var(--font-ui)
     <div class="lvl">
       <div class="name" id="lvName">Level 1</div>
       <div class="face"><span id="faceTxt">Mặt 1/2</span><span class="pips" id="pips"></span></div>
+      <div class="seg" id="viewSeg" role="group" aria-label="Chế độ xem">
+        <button type="button" data-v="play" aria-pressed="true">Chơi</button>
+        <button type="button" data-v="2d" aria-pressed="false">2D</button>
+        <button type="button" data-v="3d" aria-pressed="false">3D</button>
+      </div>
     </div>
     <div class="chips" id="chips" role="group" aria-label="Chọn level"></div>
   </div>
@@ -76,6 +90,7 @@ body { background: var(--bg-bot); color: var(--ink); font-family: var(--font-ui)
     <button class="btn" id="bRetry" type="button" aria-label="Chơi lại (R)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg><span class="lbl">Chơi lại</span></button>
   </div>
+  <div id="pvLabels"></div>
   <div class="hint" id="hint">Vuốt để lăn cọ · máy tính dùng phím mũi tên</div>
   <div class="sheet" id="sheet">
     <div class="card">
@@ -118,66 +133,114 @@ const CONFIG = {
   },
   input: { swipeMinPx: 22 },
   look: {
-    wall: '#fbfbfa', grid: '#cfd2d8', block: '#85868c', blockMesh: 0x8c8d93, roof: 0xaaabb0,
+    wall: '#fbfbfa', grid: '#cfd2d8', block: '#85868c', base: '#a9aaad', blockMesh: 0x8c8d93, roof: 0xaaabb0,
     body: 0xf1f1ef, ground: '#e7eaef', blockDepth: 0.14, blockInset: 0.07, brushSize: 0.78
   },
   paint: { blue: '#3d8ef0', red: '#ec4a4a', purple: '#9a5ae0', yellow: '#f3bd23' }
 };
 
 // =====================================================================
-// LEVELS — chép từ ảnh LD. Ký hiệu: '.' ô sơn · '#' block · 'S' start · 'x' không sơn (vùng mái).
-// faces[i] = mặt i quanh nhà (0 trước, 1 phải, 2 sau, 3 trái). Mặt có rows = phase chơi;
-// mặt chỉ có h / cols = mặt trang trí (đã sơn kín). opt = số swipe tối ưu (BFS).
-// parts (thay roof, cho nhà hình dạng riêng; toạ độ ô, gốc giữa nền, +z = mặt trước):
+// LEVELS — chép từ ảnh LD. Ký hiệu: '.' ô sơn · '#' block · 'S' start · 'x' không sơn (vùng mái) · 'b' dải nền xám nhạt.
+// faces[i] = mặt i quanh nhà (0 trước, 1 phải, 2 sau, 3 trái). Mặt có 'S' = phase chơi;
+// mặt không có 'S' (rows / h / cols) = mặt decor, đã sơn sẵn. opt = số swipe tối ưu (BFS).
+// parts = thân + mái (toạ độ ô, gốc giữa nền, +z = mặt trước):
 //   box [x0,x1,z0,z1,y0,y1] · pz [z0,z1] + pts [[x,y]..] = lăng trụ dọc z · px [x0,x1] + pts [[z,y]..] = dọc x
-//   t = dải mái dày t phủ trên polyline pts · slot + pts [[u,y]..] | arch [u0,u1,y0,y1] = trang trí phẳng trên mặt slot (at = khoảng cách từ tâm)
+//   fr [bw,bd,tw,td] + y + h = chóp cụt (tw=td=0: chóp) · dome [rx,ry,rz] + y = nửa ellipsoid
+//   t = dải mái dày t phủ trên polyline pts · slot + pts [[u,y]..] | arch [u0,u1,y0,y1] | circle [u,y,r] = trang trí phẳng trên mặt slot (at = khoảng cách từ tâm)
 //   m: body | mid | roof | light | dark
 // ccw: true = LD vẽ các mặt đi ngược chiều kim đồng hồ (Mặt 2 ở bên trái −x, Mặt 4 bên phải +x).
 // =====================================================================
+const rect = (u0, y0, u1, y1) => [[u0, y0], [u1, y0], [u1, y1], [u0, y1]];
+const arc = (cx, y0, rx, ry, n = 24) => Array.from({ length: n + 1 }, (_, i) => { const a = Math.PI * (1 - i / n); return [cx + rx * Math.cos(a), y0 + ry * Math.sin(a)]; });
+// cửa mái: ngũ giác (u0..u1, đáy y0, vai ys, nóc ya) dán lên mặt mái dốc; slope [y0, d0, k]: khoảng cách tới tâm d = d0 − (y − y0)·k
+const dormer = (slot, u0, u1, y0, ys, ya, slope) => ({ slot, pts: [[u0, y0], [u1, y0], [u1, ys], [(u0 + u1) / 2, ya], [u0, ys]], m: 'light', slope });
+// cửa sổ tròn có song chữ thập
+const roundWin = (slot, u, y, r, at) => {
+  const ri = r * 0.78, b = 0.045;
+  return [{ slot, circle: [u, y, r], m: 'light', at }, { slot, circle: [u, y, ri], m: 'dark', at: at + 0.006 },
+    { slot, pts: rect(u - ri, y - b, u + ri, y + b), m: 'light', at: at + 0.012 }, { slot, pts: rect(u - b, y - ri, u + b, y + ri), m: 'light', at: at + 0.012 }];
+};
 const LEVELS = [
   { name: 'Level 1', paint: 'blue', w: 4, d: 5,
-    roof: { type: 'frustum', insetX: 1, insetZ: 0, h: 1 },
+    parts: [ // mái hồi nóc dọc z: trước/sau tam giác + cửa sổ tròn, hai bên mái tối, cửa mái bên phải
+      { box: [-2, 2, -2.5, 2.5, 0, 4] },
+      { pz: [-2.5, 2.5], pts: [[-2, 4], [2, 4], [0, 6.1]], m: 'roof' },
+      { pz: [-2.72, 2.72], pts: [[-2.15, 3.84], [0, 6.1], [2.15, 3.84]], t: 0.14, m: 'dark' },
+      dormer(1, 0.9, 2.13, 4.47, 5.3, 5.77, [3.98, 2.16, 0.951]),
+      ...roundWin(0, 2, 4.87, 0.54, 2.506), ...roundWin(2, 2, 4.87, 0.54, 2.506)
+    ],
     faces: [
       { rows: ['....', '.##.', '.##.', 'S...'], opt: 4 },
-      { h: 4 }, { h: 4 }, { h: 4 }
+      { rows: ['.....', '.#.#.', '.#...', '.#...'] },
+      { rows: ['....', '.##.', '....', 'bbbb'] },
+      { rows: ['.....', '.###.', '..#..', 'bb#bb'] }
     ] },
-  { name: 'Level 2', paint: 'red', w: 5, d: 5,
-    roof: { type: 'frustum', insetX: 0, insetZ: 0, h: 1 },
+  { name: 'Level 2', paint: 'red', w: 5, d: 6,
+    parts: [ // mái vòm bán nguyệt dọc z: trước/sau vòm sáng viền tối, hai bên mái tối
+      { box: [-2.5, 2.5, -3, 3, 0, 4] },
+      { pz: [-3, 3], pts: arc(0, 4, 2.47, 1.78), m: 'roof' },
+      { pz: [-3.17, 3.17], pts: [...arc(0, 4, 2.62, 1.92), ...arc(0, 4, 2.47, 1.78).reverse()], m: 'dark' }
+    ],
     faces: [
       { rows: ['#....', '#.##.', '#.##.', 'S.##.'], opt: 4 },
-      { h: 4 }, { h: 4 }, { h: 4 }
+      { rows: ['......', '.#.##.', '....#.', '....#.'] },
+      { rows: ['.....', '.#.#.', '.#.#.', '.....'] },
+      { rows: ['......', '.####.', '.####.', '......'] }
     ] },
   { name: 'Level 3', paint: 'purple', w: 6, d: 5,
-    roof: { type: 'shed', rise: 0.5 },
+    parts: [ // mái lệch dốc lên về phía sau (4 → 6.63), cửa mái trên mặt dốc trước
+      { px: [-3, 3], pts: [[2.5, 0], [2.5, 4], [-2.5, 6.63], [-2.5, 0]], m: 'roof' },
+      { px: [-3.06, 3.06], pts: [[2.56, 3.97], [-2.5, 6.63]], t: 0.12, m: 'dark' },
+      { pz: [-2, 1.2], pts: [[-2, 4.5], [-0.4, 4.5], [-0.4, 5.82], [-1.2, 6.45], [-2, 5.82]], m: 'dark' }, // khối cửa mái: mặt bên thấy khối tối như LD
+      { slot: 0, pts: [[1, 4.5], [2.6, 4.5], [2.6, 5.82], [1.8, 6.45], [1, 5.82]], m: 'light', at: 1.206 }
+    ],
     faces: [
       { rows: ['......', '.##.#.', '.##...', 'S#####'], opt: 5 },
       { rows: ['xx...', '...#.', '.#.#.', '.#...', 'S#..#'], opt: 8 },
       { h: 5 }, { cols: [5, 5, 5, 4, 4] }
     ] },
   { name: 'Level 4', paint: 'yellow', w: 5, d: 6,
-    roof: { type: 'slab', t: 0.45, over: 0.35 },
+    parts: [ // mái hồi hình thang dọc z (viền tối) + ống khói góc sau phải
+      { box: [-2.5, 2.5, -3, 3, 0, 6] },
+      { pz: [-3, 3], pts: [[-2.5, 6], [2.5, 6], [1.6, 7.62], [-1.6, 7.62]], m: 'mid' },
+      { pz: [-3.22, 3.22], pts: [[-2.75, 5.55], [-1.6, 7.62], [1.6, 7.62], [2.75, 5.55]], t: 0.22, m: 'dark' },
+      { box: [1.75, 2.15, -2.5, -2, 6.8, 7.75], m: 'mid' },
+      { box: [1.62, 2.28, -2.62, -1.88, 7.75, 7.92], m: 'mid' }
+    ],
     faces: [
       { rows: ['.....', '.#.##', '.#S##', '.####', '.....', '.....'], opt: 7 },
       { rows: ['...#..', '.#.#..', '.#.#..', '.#.#..', '.#.#..', 'S#....'], opt: 7 },
       { h: 6 }, { h: 6 }
     ] },
   { name: 'Level 5', paint: 'blue', w: 5, d: 6,
-    roof: { type: 'pediment', t: 0.33, over: 0.2, h: 1 },
+    parts: [ // mái bằng tối + khối ống khói
+      { box: [-2.5, 2.5, -3, 3, 0, 7] },
+      { box: [-2.7, 2.7, -3.21, 3.21, 7, 7.32], m: 'dark' },
+      { box: [0, 1.5, -2, -0.5, 7.32, 8.56], m: 'mid' }
+    ],
     faces: [
       { rows: ['.....', '.###.', '.#...', '.#..#', '.#..#', '.#..#', 'S#..#'], opt: 7 },
       { rows: ['......', '.####.', '.###S.', '...#..', '.#.#..', '.#.#..', '.#...#'], opt: 8 },
       { h: 7 }, { h: 7 }
     ] },
-  { name: 'Level 6', paint: 'red', w: 8, d: 7,
-    roof: { type: 'frustum', insetX: 1, insetZ: 1, h: 1 },
+  { name: 'Level 6', paint: 'red', w: 7, d: 8,
+    parts: [ // mái chóp cụt tối, 2 cửa mái trước + 2 sau
+      { box: [-3.5, 3.5, -4, 4, 0, 8] },
+      { fr: [7.8, 8.6, 5, 6], y: 8, h: 1.75, m: 'dark' },
+      ...[0, 2].flatMap(s => [dormer(s, 1.7, 2.95, 8.46, 9.35, 9.63, [8, 4.31, 0.743]), dormer(s, 4.05, 5.3, 8.46, 9.35, 9.63, [8, 4.31, 0.743])])
+    ],
     faces: [
-      { h: 8 },
       { rows: ['.......', '.#####.', '.#...#.', '.#.#.#.', '.#...#.', '.#.###.', '.#.....', 'S######'], opt: 8 },
       { rows: ['.....###', '.#######', '........', '..#####.', '..#...#.', '......#.', '#.#.###.', '#S#.....'], opt: 10 },
-      { rows: ['##.....', '##.##..', '...##..', '.#.##..', '.#.##..', '.#.##.#', '.#....#', 'S...#..'], opt: 15 }
+      { rows: ['##.....', '##.##..', '...##..', '.#.##..', '.#.##..', '.#.##.#', '.#....#', 'S...#..'], opt: 15 },
+      { h: 8 }
     ] },
   { name: 'Level 7', paint: 'purple', w: 7, d: 7,
-    roof: { type: 'dome', t: 0.35, over: 0.25, h: 1.6, chimney: 1.65 },
+    parts: [ // tấm mái mỏng + vòm tối
+      { box: [-3.5, 3.5, -3.5, 3.5, 0, 10] },
+      { box: [-3.76, 3.76, -3.76, 3.76, 10, 10.35], m: 'dark' },
+      { dome: [3.39, 1.66, 3.39], y: 10.35, m: 'dark' }
+    ],
     faces: [
       { rows: ['.......', '.#.###.', '.#.###.', '.#.###.', '.#.###.', '.#...#.', '.#...#.', '.#.....', '......#', 'S...###'], opt: 11 },
       { rows: ['#......', '#.####.', '.......', '..####.', '.##....', '.##.##.', '..#....', 'S.###..', '#.###..', '#.###..'], opt: 15 },
@@ -185,7 +248,12 @@ const LEVELS = [
       { rows: ['#.....#', '#......', '#.###..', '#.###..', '.......', '..###.#', '.......', '#.###..', 'S......', '#.....#'], opt: 11 }
     ] },
   { name: 'Level 8', paint: 'yellow', w: 7, d: 6,
-    roof: { type: 'pediment', t: 0.33, over: 0.2, h: 1.2 },
+    parts: [ // mái lệch dốc lên về +x: trước/sau tam giác sáng, hai bên mái tối
+      { box: [-3.5, 3.5, -3, 3, 0, 9] },
+      { pz: [-3, 3], pts: [[-3.5, 9], [3.5, 9], [3.5, 10.57]], m: 'roof' },
+      { pz: [-3.4, 3.4], pts: [[-3.9, 8.91], [3.74, 10.62]], t: 0.15, m: 'dark' },
+      { box: [3.5, 3.53, -3.4, 3.4, 9, 10.62], m: 'dark' }
+    ],
     faces: [
       { rows: ['......#', '.##...#', '.#...##', '.#.#...', '.#.#.#.', '.#.#.#.', '.#.#.#.', '.#.#.#.', '.#.#.#S'], opt: 13 },
       { rows: ['...###', '....##', '.....#', '.#...#', '.##..#', '#.....', '......', '......', 'S...#.'], opt: 18 },
@@ -193,7 +261,7 @@ const LEVELS = [
       { rows: ['..#.##', '..#...', '......', '.##...', '.##...', '.....#', '.#...#', '.###.#', 'S.....'], opt: 17 }
     ] },
   { name: 'Level 9', paint: 'blue', w: 7, d: 7,
-    roof: { type: 'slab', t: 0.45, over: 0.35 },
+    parts: [{ box: [-3.5, 3.5, -3.5, 3.5, 0, 12] }], // không mái
     faces: [
       { rows: ['#......', '#.###..', '.......', '..###.#', '.......', '#.###..', '.......', '..###.#', '.......', '#.###..', 'S......', '#.....#'], opt: 14 },
       { rows: ['#....##', '.....##', '..#...#', '.......', '#.#.#..', '#.#.#..', '..#.#..', '.##.#..', '.##.#..', '..#.#..', '#.#.#..', '#S#.#..'], opt: 17 },
@@ -201,7 +269,10 @@ const LEVELS = [
       { rows: ['#......', '.......', '..####.', '.......', '.##.##.', '.##.##.', '.......', '###.#..', '....#..', '.####..', '.......', 'S.....#'], opt: 15 }
     ] },
   { name: 'Level 10', paint: 'red', w: 7, d: 7,
-    roof: { type: 'frustum', insetX: 1, insetZ: 1, h: 1 },
+    parts: [ // mái chóp cụt tối
+      { box: [-3.5, 3.5, -3.5, 3.5, 0, 9] },
+      { fr: [7.66, 7.66, 5, 5], y: 9, h: 1.73, m: 'dark' }
+    ],
     faces: [
       { rows: ['..###..', '.......', '#.###.#', '#.###.#', '#.#.#.#', '#.#.#..', '#.#.#..', '.......', 'S...#..'], opt: 14 },
       { rows: ['#.....#', '...#...', '..###..', '..###..', '.#####.', '..###..', '...#...', 'S..#...', '#.....#'], opt: 24 },
@@ -209,7 +280,7 @@ const LEVELS = [
       { rows: ['.....##', '.....##', '.######', '.......', '..####.', '..#..#.', '.....#.', '#.#.##.', '#S#....'], opt: 12 }
     ] },
   { name: 'Level 11', paint: 'purple', w: 7, d: 6,
-    roof: { type: 'dome', t: 0.35, over: 0.25, h: 1.6, chimney: 1.65 },
+    parts: [{ box: [-3.5, 3.5, -3, 3, 0, 11] }], // không mái
     faces: [
       { rows: ['...#...', '.#.#.#.', '.......', '.#####.', '...#...', '.#.#.#.', '...#...', '##.#.##', '...#...', '.#.#.#.', 'S......'], opt: 24 },
       { rows: ['.....#', '.....#', '##....', '......', '.#...#', '.#...#', '......', '.##...', '.##...', '.##...', 'S#####'], opt: 15 },
@@ -217,10 +288,14 @@ const LEVELS = [
       { rows: ['#.....', '#.###.', '......', '..###.', '.##...', '.##...', '..#...', '..##..', '..##..', 'S.##..', '#.##..'], opt: 16 }
     ] },
   { name: 'Level 12', paint: 'yellow', w: 7, d: 8,
-    roof: { type: 'pediment', t: 0.33, over: 0.2, h: 1.4 },
+    parts: [ // tấm mái mỏng + mái chóp thấp tối
+      { box: [-3.5, 3.5, -4, 4, 0, 12] },
+      { box: [-4, 4, -4.4, 4.4, 12, 12.28], m: 'dark' },
+      { fr: [6.6, 7.2, 0, 0], y: 12.28, h: 1.3, m: 'dark' }
+    ],
     faces: [
       { rows: ['#.....#', '......#', '..#....', '.....#.', '.....#.', '.....#.', '.....#.', '.......', '.#...#.', '.....#.', '.#.#.#.', 'S#.....'], opt: 16 },
-      { rows: ['...##...', '.#.##.#.', '........', '##.##.##', '##......', '....#.#.', '....#...', '....####', '#....###', '........', '.###.##.', 'S..#....'], opt: 23 },
+      { rows: ['...##...', '.#.##.#.', '........', '##.##.##', '##......', '....#.#.', '....#...', '....####', '#....###', '........', '.###.##.', '..S#....'], opt: 22 },
       { rows: ['..#####', '..###..', '..###..', '....#..', '..#.#..', '..#.#..', '..#....', '..#.##.', '.......', '#.#.##.', '#......', 'S...###'], opt: 14 },
       { rows: ['#......#', '#..#....', '...#.#..', '...#....', '...#.###', '...#....', '...#.##.', '##.#.##.', '##......', '####..#.', '####..#.', 'S.....#.'], opt: 22 }
     ] },
@@ -242,7 +317,8 @@ const LEVELS = [
   { name: 'Level 14', paint: 'red', w: 5, d: 7, ccw: true,
     parts: [ // trước thấp 7, sau cao 9: mái dốc lên về phía sau, nửa sau bằng
       { px: [-2.5, 2.5], pts: [[3.5, 0], [3.5, 7], [-0.5, 9], [-3.5, 9], [-3.5, 0]], m: 'mid' },
-      { px: [-2.55, 2.55], pts: [[3.55, 6.98], [-0.5, 9], [-3.55, 9]], t: 0.1, m: 'dark' }
+      { px: [-2.55, 2.55], pts: [[3.55, 6.98], [-0.5, 9], [-3.55, 9]], t: 0.1, m: 'dark' },
+      dormer(0, 1.85, 3.1, 7.63, 8.4, 8.8, [7.08, 3.56, 2.005])
     ],
     faces: [
       { rows: ['....#', '.##..', '.....', '.###.', '.....', 'S.##.', '#....'], opt: 10 },
@@ -254,7 +330,8 @@ const LEVELS = [
     parts: [ // mái hồi nóc dọc trục x: trước/sau thấy mặt dốc tối, hai bên thấy hồi hình thang
       { box: [-3.5, 3.5, -3.5, 3.5, 0, 11] },
       { px: [-3.5, 3.5], pts: [[3.5, 11], [1.5, 13], [-1.5, 13], [-3.5, 11]], m: 'light' },
-      { px: [-3.77, 3.77], pts: [[3.62, 10.88], [1.5, 13], [-1.5, 13], [-3.62, 10.88]], t: 0.18, m: 'dark' }
+      { px: [-3.77, 3.77], pts: [[3.62, 10.88], [1.5, 13], [-1.5, 13], [-3.62, 10.88]], t: 0.18, m: 'dark' },
+      ...[0, 2].flatMap(s => [dormer(s, 1.37, 2.62, 11.44, 12.15, 12.62, [11.06, 3.63, 1]), dormer(s, 4.37, 5.62, 11.44, 12.15, 12.62, [11.06, 3.63, 1])])
     ],
     faces: [
       { rows: ['#......', '..####.', '.......', '.##.##.', '.##.##.', '.......', '###.#..', '....#..', '.####..', '.......', 'S.....#'], opt: 14 },
@@ -268,10 +345,10 @@ const LEVELS = [
       { pz: [-4, 4], pts: [[-4, 10], [2, 10], [-1, 12.2]], m: 'light' },
       { pz: [-4.05, 4.05], pts: [[-4.12, 9.92], [-1, 12.2], [2.12, 9.92]], t: 0.12, m: 'dark' },
       { box: [0.05, 0.55, -0.3, 0.3, 10.6, 11.9], m: 'dark' },
-      { px: [0.6, 1.6], pts: [[2.09, 10.2], [2.09, 11.07], [1.475, 11.52], [0.86, 11.07], [0.86, 10.2]], m: 'light' },
-      { px: [0.6, 1.6], pts: [[-0.86, 10.2], [-0.86, 11.07], [-1.475, 11.52], [-2.09, 11.07], [-2.09, 10.2]], m: 'light' },
+      dormer(1, 1.91, 3.14, 10.2, 11.07, 11.52, [10.04, 2.13, 1.368]), dormer(1, 4.86, 6.09, 10.2, 11.07, 11.52, [10.04, 2.13, 1.368]),
       { pz: [-4, 4], pts: [[2, 0], [4, 0], [4, 7], [2, 9.2]], m: 'mid' },
-      { pz: [-4.05, 4.05], pts: [[1.95, 9.23], [4.1, 6.93]], t: 0.12, m: 'dark' }
+      { pz: [-4.05, 4.05], pts: [[1.95, 9.23], [4.1, 6.93]], t: 0.12, m: 'dark' },
+      { slot: 0, circle: [3, 11, 0.55], m: 'mid', at: 4.006 }, { slot: 2, circle: [5, 11, 0.55], m: 'mid', at: 4.006 }
     ],
     faces: [
       { rows: ['#....#xx', '#.....xx', '...##..x', '...##...', '...##...', '..#.....', '.....#..', '.....###', 'S.......', '##......'], opt: 26 },
@@ -280,9 +357,9 @@ const LEVELS = [
       { rows: ['....####', '.#....##', '...##...', '##.##...', '##......', '####....', '####....', '####.#..', 'S....#..', '#....#..'], opt: 20 }
     ] },
   { name: 'Level 17', paint: 'blue', w: 8, d: 8,
-    parts: [ // mái chóp cụt tối: trước/sau chữ nhật, hai bên hình thang
+    parts: [ // mái chóp cụt tối, cả 4 mặt thấy hình thang
       { box: [-4, 4, -4, 4, 0, 11] },
-      { px: [-4, 4], pts: [[4, 11], [2, 13], [-2, 13], [-4, 11]], m: 'dark' }
+      { fr: [8, 8, 4, 4], y: 11, h: 2, m: 'dark' }
     ],
     faces: [
       { rows: ['......##', '.##.....', '.##.#.#.', '......#.', '###...#.', '###.....', '###..##.', '........', '.#...##.', '.#...##.', 'S..#....'], opt: 18 },
@@ -299,6 +376,7 @@ const LEVELS = [
       { pz: [-4.5, 4.5], pts: [[-4, 0], [-2, 0], [-2, 8.23], [-4, 7]], m: 'mid' },
       { pz: [-4.55, 4.55], pts: [[1.95, 8.26], [4.1, 6.94]], t: 0.12, m: 'dark' },
       { pz: [-4.55, 4.55], pts: [[-4.1, 6.94], [-1.95, 8.26]], t: 0.12, m: 'dark' },
+      { box: [0.87, 1.27, 2.5, 2.9, 9.6, 11.26], m: 'roof' }, // ống khói
       { slot: 1, arch: [1.09, 2.91, 8, 9.57], m: 'light', at: 2.01 }, { slot: 1, arch: [6.09, 7.91, 8, 9.57], m: 'light', at: 2.01 },
       { slot: 3, arch: [1.09, 2.91, 8, 9.57], m: 'light', at: 2.01 }, { slot: 3, arch: [6.09, 7.91, 8, 9.57], m: 'light', at: 2.01 }
     ],
@@ -309,7 +387,10 @@ const LEVELS = [
       { rows: ['####....#', '#..#.##.#', '#..#.....', '#........', '.......##', '.#####...', 'S........'], opt: 17 }
     ] },
   { name: 'Level 19', paint: 'purple', w: 10, d: 7,
-    parts: [{ box: [-5, 5, -3.5, 3.5, 0, 10] }], // không mái
+    parts: [ // mái chóp tối, cả 4 mặt thấy tam giác
+      { box: [-5, 5, -3.5, 3.5, 0, 10] },
+      { fr: [11, 8, 0, 0], y: 10, h: 2.27, m: 'dark' }
+    ],
     faces: [
       { rows: ['....##....', '.##.##.##.', '.##.##.##.', '.##.##.##.', '.##.......', '.##.....#.', '...#.#..#.', '.#.#.#....', '.#.#.#..##', 'S..#....##'], opt: 18 },
       { rows: ['.......', '.#####.', '.#.....', '......#', '##.#...', '##.##..', '.......', '.......', '.#.###.', 'S#.....'], opt: 15 },
@@ -408,8 +489,10 @@ const CELL_PX = 64;
 const G = {
   levelIdx: 0, lv: null, faces: [], play: [], phase: 0, camSlot: 0,
   mode: 'play', t0: 0, move: null, pending: null, undo: [], moves: 0, totalMoves: 0,
-  W: 4, D: 5, TOP: 5, OVER: 0, rot: null, intro: null, win: null, hinted: false
+  W: 4, D: 5, TOP: 5, OVER: 0, rot: null, intro: null, win: null, hinted: false,
+  view: 'play', bb: null // view: play | 2d | 3d (preview cho art)
 };
+const PV = { yaw: 30, pitch: 18, zoom: 1 }; // camera preview 3D
 
 function buildFace(def, slot) {
   const w = slot % 2 === 0 ? G.W : G.D;
@@ -417,18 +500,19 @@ function buildFace(def, slot) {
   if (def.rows) rows = def.rows;
   else {
     const cols = def.cols || Array(w).fill(def.h); const R = Math.max(...cols); rows = [];
-    for (let r = 0; r < R; r++) { let s = ''; for (let c = 0; c < w; c++) s += r < R - cols[c] ? 'x' : 'p'; rows.push(s); }
+    for (let r = 0; r < R; r++) { let s = ''; for (let c = 0; c < w; c++) s += r < R - cols[c] ? 'x' : '.'; rows.push(s); }
   }
   if (rows[0].length !== w) console.warn('Face width mismatch', G.lv.name, slot, rows[0].length, w);
   const R = rows.length, n = w * R, cell = new Uint8Array(n), paint = new Float64Array(n);
   let start = -1, total = 0;
   for (let r = 0; r < R; r++) for (let c = 0; c < w; c++) {
     const ch = rows[r][c], i = r * w + c;
-    if (ch === 'x') cell[i] = 0; else if (ch === '#') cell[i] = 2; else { cell[i] = 1; total++; }
+    if (ch === 'x') cell[i] = 0; else if (ch === '#') cell[i] = 2; else if (ch === 'b') cell[i] = 3; else { cell[i] = 1; total++; }
     if (ch === 'S') start = i;
-    if (ch === 'p') paint[i] = -1; // đã sơn sẵn
   }
-  const F = { slot, w, R, cell, paint, start, total, painted: def.rows ? 0 : total, playable: !!def.rows, opt: def.opt || 0, dirty: true, animUntil: 0 };
+  const playable = start >= 0;
+  if (!playable) for (let i = 0; i < n; i++) if (cell[i] === 1) paint[i] = -1; // mặt decor: sơn sẵn
+  const F = { slot, w, R, cell, paint, start, total, painted: playable ? 0 : total, playable, opt: def.opt || 0, dirty: true, animUntil: 0 };
   F.tex = canvasTex(w * CELL_PX, R * CELL_PX);
   F.tex.t.anisotropy = renderer.capabilities.getMaxAnisotropy ? Math.min(8, renderer.capabilities.getMaxAnisotropy()) : 4;
   const fr = FRAME[slot], half = slot % 2 === 0 ? G.D / 2 : G.W / 2;
@@ -458,13 +542,14 @@ function cellLocal(F, r, c, out) {
 
 function drawFace(F, now) {
   const g = F.tex.ctx, P = CELL_PX, L = CONFIG.look, col = CONFIG.paint[G.lv.paint];
+  const showPaint = G.view === 'play'; // preview: lưới trắng như ảnh LD
   g.clearRect(0, 0, F.w * P, F.R * P);
   let animating = false;
   for (let r = 0; r < F.R; r++) for (let c = 0; c < F.w; c++) {
     const i = r * F.w + c, t = F.cell[i]; if (!t) continue;
     const x = c * P, y = r * P;
-    g.fillStyle = t === 2 ? L.block : L.wall; g.fillRect(x, y, P, P);
-    if (t === 1 && F.paint[i] !== 0) {
+    g.fillStyle = t === 2 ? L.block : t === 3 ? L.base : L.wall; g.fillRect(x, y, P, P);
+    if (t === 1 && F.paint[i] !== 0 && showPaint) {
       let k = 1;
       if (F.paint[i] > 0) { k = clamp01((now - F.paint[i]) / CONFIG.motion.cellFillSec); if (k < 1) animating = true; }
       const s = ease('OutCubic', k) * P, o = (P - s) / 2;
@@ -480,7 +565,7 @@ function drawFace(F, now) {
   g.lineWidth = 1.5;
   for (let r = 0; r < F.R; r++) for (let c = 0; c < F.w; c++) {
     const i = r * F.w + c, t = F.cell[i]; if (t !== 1) continue;
-    g.strokeStyle = F.paint[i] !== 0 ? 'rgba(0,0,0,0.12)' : L.grid;
+    g.strokeStyle = F.paint[i] !== 0 && showPaint ? 'rgba(0,0,0,0.12)' : L.grid;
     g.strokeRect(c * P + 0.75, r * P + 0.75, P - 1.5, P - 1.5);
   }
   F.tex.t.needsUpdate = true; F.dirty = animating;
@@ -505,10 +590,16 @@ function addDeco(p, mat) {
   if (p.arch) {
     const [u0, u1, y0, y1] = p.arch, r = (u1 - u0) / 2;
     sh.moveTo(u0, y0); sh.lineTo(u1, y0); sh.lineTo(u1, y1 - r); sh.absarc(u0 + r, y1 - r, r, 0, Math.PI, false); sh.lineTo(u0, y0);
-  } else p.pts.forEach(([u, y], i) => i ? sh.lineTo(u, y) : sh.moveTo(u, y));
+  } else if (p.circle) sh.absarc(p.circle[0], p.circle[1], p.circle[2], 0, Math.PI * 2, false);
+  else p.pts.forEach(([u, y], i) => i ? sh.lineTo(u, y) : sh.moveTo(u, y));
   const g = new THREE.ShapeGeometry(sh, 12); g.translate(-fw / 2, 0, 0);
+  if (p.slope) { // dán lên mặt dốc: đẩy từng đỉnh ra theo độ cao
+    const [y0, d0, k] = p.slope, pos = g.attributes.position;
+    for (let i = 0; i < pos.count; i++) pos.setZ(i, d0 + 0.01 - (pos.getY(i) - y0) * k);
+    g.computeVertexNormals();
+  }
   const m = addMesh(g, mat); m.rotation.y = fr.ry;
-  m.position.copy(fr.n).multiplyScalar(p.at !== undefined ? p.at : (even ? G.D : G.W) / 2 + 0.006);
+  if (!p.slope) m.position.copy(fr.n).multiplyScalar(p.at !== undefined ? p.at : (even ? G.D : G.W) / 2 + 0.006);
 }
 function buildParts(parts) {
   const bb = new THREE.Box3();
@@ -519,6 +610,11 @@ function buildParts(parts) {
     if (p.box) {
       const [x0, x1, z0, z1, y0, y1] = p.box;
       m = addMesh(new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0), mat, (x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+    } else if (p.fr) {
+      m = addMesh(frustumGeo(...p.fr, p.h), mat, 0, p.y, 0);
+    } else if (p.dome) {
+      m = addMesh(new THREE.SphereGeometry(1, 40, 14, 0, Math.PI * 2, 0, Math.PI / 2), mat, 0, p.y, 0);
+      m.scale.set(...p.dome);
     } else {
       const pts = p.t ? [...p.pts, ...p.pts.map(([u, y]) => [u, y + p.t]).reverse()] : p.pts;
       const [a0, a1] = p.pz || p.px;
@@ -531,44 +627,6 @@ function buildParts(parts) {
   G.TOP = bb.max.y;
   G.OVER = Math.max(0, bb.max.x - G.W / 2, -bb.min.x - G.W / 2, bb.max.z - G.D / 2, -bb.min.z - G.D / 2);
 }
-function buildRoof(lv) {
-  if (lv.parts) { buildParts(lv.parts); return; }
-  const R = lv.roof, W = G.W, D = G.D;
-  const H = Math.max(...G.faces.map(f => f.R));
-  if (R.type === 'shed') {
-    // profile dọc theo z (trước → sau) từ chiều cao cột của mặt phải
-    const F1 = G.faces[1], tops = [];
-    for (let c = 0; c < F1.w; c++) { let h = 0; for (let r = 0; r < F1.R; r++) if (F1.cell[r * F1.w + c]) { h = F1.R - r; break; } tops.push(h); }
-    const y0 = tops[0], sh = new THREE.Shape(); sh.moveTo(0, y0);
-    for (let c = 0; c < tops.length; c++) { sh.lineTo(c, tops[c]); sh.lineTo(c + 1, tops[c]); }
-    const yEnd = y0 + R.rise * D; sh.lineTo(D, yEnd); sh.lineTo(0, y0);
-    const g = new THREE.ExtrudeGeometry(sh, { depth: W, bevelEnabled: false });
-    g.rotateY(Math.PI / 2); g.translate(-W / 2, 0, D / 2);
-    addMesh(g, roofMat);
-    G.TOP = yEnd; G.OVER = 0;
-    addMesh(new THREE.BoxGeometry(W - 0.02, Math.min(...tops), D - 0.02), bodyMat, 0, Math.min(...tops) / 2, 0);
-    return;
-  }
-  addMesh(new THREE.BoxGeometry(W - 0.02, H, D - 0.02), bodyMat, 0, H / 2, 0);
-  if (R.type === 'frustum') {
-    addMesh(frustumGeo(W, D, W - 2 * R.insetX, D - 2 * R.insetZ, R.h), roofMat, 0, H, 0);
-    G.TOP = H + R.h; G.OVER = 0;
-  } else if (R.type === 'slab') {
-    addMesh(new THREE.BoxGeometry(W + 2 * R.over, R.t, D + 2 * R.over), blockMat, 0, H + R.t / 2, 0);
-    G.TOP = H + R.t; G.OVER = R.over;
-  } else if (R.type === 'pediment') {
-    addMesh(new THREE.BoxGeometry(W + 2 * R.over, R.t, D + 2 * R.over), roofMat, 0, H + R.t / 2, 0);
-    addMesh(frustumGeo(W, D, 0, 0, R.h), roofMat, 0, H + R.t, 0);
-    G.TOP = H + R.t + R.h; G.OVER = R.over;
-  } else if (R.type === 'dome') {
-    addMesh(new THREE.BoxGeometry(W + 2 * R.over, R.t, D + 2 * R.over), roofMat, 0, H + R.t / 2, 0);
-    const dome = addMesh(new THREE.SphereGeometry(1, 40, 14, 0, Math.PI * 2, 0, Math.PI / 2), roofMat, 0, H + R.t, 0);
-    dome.scale.set(W * 0.46, R.h, D * 0.46);
-    addMesh(new THREE.BoxGeometry(0.9, R.chimney, 0.9), roofMat, 0, H + R.t + R.chimney / 2, D / 2 - 1.5);
-    G.TOP = H + R.t + Math.max(R.h, R.chimney); G.OVER = R.over;
-  }
-}
-
 function disposeHouse() {
   house.traverse(o => { if (o.geometry && o.geometry !== brushGeo) o.geometry.dispose(); if (o.material && o.material.map) { o.material.map.dispose(); o.material.dispose(); } });
   house.clear();
@@ -580,7 +638,8 @@ function loadLevel(idx, withIntro) {
   G.levelIdx = idx; G.lv = LEVELS[idx]; G.W = G.lv.w; G.D = G.lv.d;
   G.faces = G.lv.faces.map((def, i) => buildFace(def, G.lv.ccw ? (4 - i) % 4 : i));
   G.play = G.faces.filter(f => f.playable);
-  buildRoof(G.lv);
+  buildParts(G.lv.parts);
+  G.bb = new THREE.Box3().setFromObject(house); // trước khi thêm blob: khung cho preview 2D
   const blob = new THREE.Mesh(new THREE.PlaneGeometry(G.W + 3.2, G.D + 3.2), new THREE.MeshBasicMaterial({ map: blobTex.t, transparent: true, depthWrite: false }));
   blob.rotation.x = -Math.PI / 2; blob.position.y = 0.01; house.add(blob);
   const col = CONFIG.paint[G.lv.paint];
@@ -592,6 +651,7 @@ function loadLevel(idx, withIntro) {
   startPhase(0, performance.now() / 1000, false);
   G.intro = withIntro && CONFIG.motion.introEnabled ? { t0: performance.now() / 1000 } : null;
   sheet.classList.remove('show');
+  if (G.view !== 'play') brush.visible = false;
   renderChips(); updateHud();
 }
 function startPhase(p, now, pop) {
@@ -729,7 +789,7 @@ $('chips').addEventListener('click', e => { const b = e.target.closest('.chip');
 function updateHud() {
   const n = G.play.length, F = G.play[G.phase];
   $('lvName').textContent = G.lv.name;
-  $('faceTxt').textContent = `Mặt ${G.phase + 1}/${n}`;
+  $('faceTxt').textContent = G.view === 'play' ? `Mặt ${G.phase + 1}/${n}` : G.view === '3d' ? 'Kéo để xoay · cuộn để zoom' : `${n} mặt chơi / ${G.faces.length} mặt`;
   $('pips').innerHTML = G.play.map((f, i) => `<span class="pip ${f.painted >= f.total ? 'done' : ''} ${i === G.phase ? 'cur' : ''}"></span>`).join('');
   $('mv').textContent = G.moves;
   $('opt').textContent = `tối ưu ${F.opt}`;
@@ -746,21 +806,67 @@ $('bUndo').addEventListener('click', undo);
 $('bRetry').addEventListener('click', () => loadLevel(G.levelIdx, false));
 $('bReplay').addEventListener('click', () => loadLevel(G.levelIdx, false));
 $('bNext').addEventListener('click', () => loadLevel((G.levelIdx + 1) % LEVELS.length, true));
+function setView(v) {
+  const was = G.view; G.view = v; pvKey = '';
+  $('app').classList.toggle('preview', v !== 'play'); $('app').classList.toggle('v2d', v === '2d');
+  document.querySelectorAll('#viewSeg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.v === v)));
+  if (v === 'play') { if (was !== 'play') loadLevel(G.levelIdx, false); return; } // về chơi: chơi lại level
+  brush.visible = false; G.faces.forEach(f => { f.dirty = true; }); updateHud();
+}
+$('viewSeg').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setView(b.dataset.v); });
+
+// ---------- preview 2D: mỗi mặt một viewport orthographic, cùng tỉ lệ, xếp theo thứ tự Mặt 1..n như ảnh LD ----------
+const orthoCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 400);
+let pvKey = '';
+function render2D() {
+  const W = cv.clientWidth, H = cv.clientHeight, n = G.faces.length, LBL = 28;
+  const top = document.querySelector('.hud.top').getBoundingClientRect().bottom - cv.getBoundingClientRect().top + 8;
+  const cols = W >= (H - top) * 1.2 ? n : Math.ceil(n / 2), cw = (W - 32) / cols, ch = (H - top - 12) / Math.ceil(n / cols), vh = ch - LBL;
+  const bb = G.bb, c = bb.getCenter(new THREE.Vector3()), sy = bb.max.y;
+  const k = Math.min(vh * 0.95 / sy, ...G.faces.map(F => cw * 0.9 / (F.slot % 2 ? bb.max.z - bb.min.z : bb.max.x - bb.min.x))); // px mỗi ô
+  renderer.setScissorTest(false); renderer.setViewport(0, 0, W, H); renderer.clear(); renderer.setScissorTest(true);
+  const cells = G.faces.map((F, i) => {
+    const x = 16 + (i % cols) * cw, y = top + Math.floor(i / cols) * ch;
+    renderer.setViewport(x, H - y - vh, cw, vh); renderer.setScissor(x, H - y - vh, cw, vh);
+    orthoCam.left = -cw / 2 / k; orthoCam.right = cw / 2 / k; orthoCam.top = vh / 2 / k; orthoCam.bottom = -vh / 2 / k; orthoCam.updateProjectionMatrix();
+    orthoCam.position.set(c.x, sy / 2, c.z).addScaledVector(FRAME[F.slot].n, 100); orthoCam.lookAt(c.x, sy / 2, c.z);
+    sun.position.copy(orthoCam.position).y += 60; sun.target.position.set(c.x, sy / 2, c.z);
+    renderer.render(scene, orthoCam);
+    return { x: x + cw / 2, y: y + vh + 4, F };
+  });
+  renderer.setScissorTest(false); renderer.setViewport(0, 0, W, H);
+  const key = [G.levelIdx, W, H, top, cols].join('|');
+  if (key !== pvKey) {
+    pvKey = key;
+    $('pvLabels').innerHTML = cells.map((o, i) => `<div class="pvl" style="left:${o.x}px;top:${o.y}px">Mặt ${i + 1}<small> · ${o.F.playable ? 'chơi' : 'decor'}</small></div>`).join('');
+  }
+}
 
 // ---------- input ----------
 let sw = null;
 cv.addEventListener('pointerdown', e => { sw = { x: e.clientX, y: e.clientY, fired: false, id: e.pointerId }; try { cv.setPointerCapture(e.pointerId); } catch (_) {} });
 cv.addEventListener('pointermove', e => {
-  if (!sw || sw.fired || e.pointerId !== sw.id) return;
+  if (!sw || e.pointerId !== sw.id) return;
+  if (G.view === '3d') { // kéo = xoay preview
+    PV.yaw += (e.clientX - sw.x) * 0.4; PV.pitch = Math.max(-10, Math.min(80, PV.pitch + (e.clientY - sw.y) * 0.3));
+    sw.x = e.clientX; sw.y = e.clientY; return;
+  }
+  if (sw.fired || G.view !== 'play') return;
   const dx = e.clientX - sw.x, dy = e.clientY - sw.y;
   if (Math.hypot(dx, dy) < CONFIG.input.swipeMinPx) return;
   sw.fired = true; tryMove(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'), performance.now() / 1000);
 });
 const endSw = () => { sw = null; };
 cv.addEventListener('pointerup', endSw); cv.addEventListener('pointercancel', endSw);
+cv.addEventListener('wheel', e => { if (G.view !== '3d') return; e.preventDefault(); PV.zoom = Math.max(0.4, Math.min(2.5, PV.zoom * Math.exp(e.deltaY * 0.001))); }, { passive: false });
 window.addEventListener('keydown', e => {
   const k = e.key, now = performance.now() / 1000;
   const map = { ArrowUp: 'U', ArrowDown: 'D', ArrowLeft: 'L', ArrowRight: 'R', w: 'U', s: 'D', a: 'L', d: 'R', W: 'U', S: 'D', A: 'L', D: 'R' };
+  if (G.view !== 'play') { // preview 3D: phím mũi tên xoay 15°
+    const d = G.view === '3d' && { L: [-15, 0], R: [15, 0], U: [0, -15], D: [0, 15] }[map[k]];
+    if (d) { e.preventDefault(); PV.yaw += d[0]; PV.pitch = Math.max(-10, Math.min(80, PV.pitch + d[1])); }
+    return;
+  }
   if (map[k]) { e.preventDefault(); tryMove(map[k], now); }
   else if (k === 'z' || k === 'Z') undo();
   else if (k === 'r' || k === 'R') loadLevel(G.levelIdx, false);
@@ -776,7 +882,7 @@ window.addEventListener('resize', resize);
 if (window.ResizeObserver) new ResizeObserver(resize).observe(cv);
 function frame() {
   const now = performance.now() / 1000;
-  switch (G.mode) {
+  if (G.view === 'play') switch (G.mode) {
     case 'moving': stepMove(now); break;
     case 'bump': stepBump(now); break;
     case 'clear': stepClear(now); break;
@@ -784,8 +890,12 @@ function frame() {
     case 'pop': stepPop(now); break;
   }
   for (const F of G.faces) if (F.dirty) drawFace(F, now);
-  cameraTick(now);
-  renderer.render(scene, cam);
+  if (G.view === '2d') render2D();
+  else {
+    if (G.view === '3d') applyView({ yaw: PV.yaw, pitch: PV.pitch, width: G.W, depth: G.D, fill: CONFIG.camera.widthFill, yOff: CONFIG.camera.yOffset, distMul: PV.zoom, fixedK: 1 });
+    else cameraTick(now);
+    renderer.render(scene, cam);
+  }
   requestAnimationFrame(frame);
 }
 
